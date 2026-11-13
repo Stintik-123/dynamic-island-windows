@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
+using System.Windows.Automation;
 using Windows.Devices.Radios;
 using Windows.Networking.Connectivity;
 
@@ -115,6 +116,7 @@ public static class ControlCenter
     /// <summary>The connected VPN profile, if any.</summary>
     public static string? ConnectedVpn()
     {
+        if (AmneziaTunnelUp()) return "Amnezia";
         var profiles = VpnProfiles();
         if (profiles.Count == 0) return null;
         var output = Rasdial("");
@@ -131,6 +133,100 @@ public static class ControlCenter
 
     /// <summary>Windows' own VPN page (for adding a profile or for third-party VPN apps).</summary>
     public static void OpenVpnSettings() => Process.Start(new ProcessStartInfo("ms-settings:network-vpn") { UseShellExecute = true });
+
+    // ------------------------------------------------------------------ AmneziaVPN (third-party tunnel)
+
+    private const string AmneziaConnectButtonId = "AmneziaApplication.mainWindow.tabBarStackView.connectButton";
+
+    private static readonly string[] AmneziaPaths =
+    [
+        @"C:\Program Files\AmneziaVPN\AmneziaVPN.exe",
+        @"C:\Program Files (x86)\AmneziaVPN\AmneziaVPN.exe",
+    ];
+
+    /// <summary>Path to the AmneziaVPN executable, or null when the app is not installed.</summary>
+    public static string? AmneziaPath()
+    {
+        foreach (var path in AmneziaPaths)
+            if (File.Exists(path)) return path;
+        return null;
+    }
+
+    public static bool AmneziaRunning() => Process.GetProcessesByName("AmneziaVPN").Length > 0;
+
+    public static bool AmneziaAvailable() => AmneziaPath() != null || AmneziaRunning();
+
+    /// <summary>True while a WireGuard / Amnezia tunnel adapter is up. The adapter is the source of truth:
+    /// the button caption can lag behind, the adapter cannot.</summary>
+    public static bool AmneziaTunnelUp()
+    {
+        try
+        {
+            foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                var d = ni.Description ?? "";
+                if (d.Contains("WireGuard", StringComparison.OrdinalIgnoreCase) ||
+                    d.Contains("Amnezia", StringComparison.OrdinalIgnoreCase)) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static AutomationElement? AmneziaButton()
+    {
+        try
+        {
+            foreach (var proc in Process.GetProcessesByName("AmneziaVPN"))
+            {
+                var win = AutomationElement.RootElement.FindFirst(TreeScope.Children,
+                    new PropertyCondition(AutomationElement.ProcessIdProperty, proc.Id));
+                if (win == null) continue;
+                var btn = win.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.AutomationIdProperty, AmneziaConnectButtonId));
+                if (btn != null) return btn;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>Press Amnezia's own connect button and wait until the tunnel really changes state.</summary>
+    public static Task<bool> ToggleAmneziaAsync() => Task.Run(() =>
+    {
+        var was = AmneziaTunnelUp();
+        if (!AmneziaRunning())
+        {
+            var exe = AmneziaPath();
+            if (exe == null) return false;
+            try { Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true }); } catch { return false; }
+            for (var i = 0; i < 40 && !AmneziaRunning(); i++) Thread.Sleep(250);
+            Thread.Sleep(2500);
+        }
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var button = AmneziaButton();
+            if (button == null) { Thread.Sleep(1200); continue; }
+            try
+            {
+                if (!button.TryGetCurrentPattern(InvokePattern.Pattern, out var pattern)) return false;
+                ((InvokePattern)pattern).Invoke();
+            }
+            catch { }
+
+            for (var i = 0; i < 50; i++)
+            {
+                Thread.Sleep(400);
+                if (AmneziaTunnelUp() != was) return true;
+            }
+        }
+        return false;
+    });
+
+    /// <summary>Any VPN this machine can switch from the island.</summary>
+    public static bool VpnAvailable() => VpnProfiles().Count > 0 || AmneziaAvailable();
 
     // ------------------------------------------------------------------ power
 

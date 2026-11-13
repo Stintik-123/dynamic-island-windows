@@ -137,7 +137,7 @@ public partial class MainWindow
         var air = await ControlCenter.AirplaneAsync();
         Paint("air", air, air == true ? L.T("вкл.") : L.T("выкл."));
         var vpn = await Task.Run(ControlCenter.ConnectedVpn);
-        Paint("vpn", vpn != null, vpn ?? (ControlCenter.VpnProfiles().Count == 0 ? L.T("настроить") : L.T("выкл.")));
+        Paint("vpn", vpn != null, vpn ?? (!ControlCenter.VpnAvailable() ? L.T("настроить") : L.T("выкл.")));
         Paint("clean", _settings.CleanDesktop, _settings.CleanDesktop ? L.T("вкл.") : L.T("выкл."));
 
         var battery = ControlCenter.Battery();
@@ -156,6 +156,17 @@ public partial class MainWindow
 
     private async Task ToggleVpn()
     {
+        // On this machine the real tunnel is Amnezia's: switch that, not a Windows profile.
+        if (ControlCenter.AmneziaAvailable())
+        {
+            Paint("vpn", false, L.T("переключаю…"));
+            var switched = await ControlCenter.ToggleAmneziaAsync();
+            var on = ControlCenter.AmneziaTunnelUp();
+            Paint("vpn", on, on ? "Amnezia" : L.T("выкл."));
+            if (!switched) ShowToast("", "Amnezia не переключилась", "Откройте AmneziaVPN и подключитесь вручную");
+            return;
+        }
+
         var profiles = ControlCenter.VpnProfiles();
         if (profiles.Count == 0) { ControlCenter.OpenVpnSettings(); return; }
         var connected = await Task.Run(ControlCenter.ConnectedVpn);
